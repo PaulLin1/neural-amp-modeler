@@ -81,7 +81,7 @@ class ConditionalWaveNet(nn.Module):
         if dilations is None:
             # this is the wavenet patter youll see in the imgaes
             # like th wave image
-            dilations = [1, 2, 4, 8, 16, 32] * 2
+            dilations = [1, 2, 4, 8]
 
         self.n_quantize = n_quantize
         self.embedding = nn.Embedding(n_quantize, residual_channels)
@@ -141,7 +141,7 @@ class AmpDataset(torch.utils.data.Dataset):
 from scipy.io import wavfile
 
 # Process clean
-sr, waveform = wavfile.read("samples/clean/smiths.wav")
+sr, waveform = wavfile.read("samples_new/untitled_2025-11-04 16-58-28_Insert 1 - Part_1.wav")
 if waveform.ndim > 1:
     waveform = waveform.mean(axis=1)
 
@@ -150,7 +150,7 @@ waveform /= np.abs(waveform).max()
 clean_quant = mu_law_encode(waveform)
 
 # Process amped
-sr, waveform = wavfile.read("samples/real/smiths.wav")
+sr, waveform = wavfile.read("samples_new/Untitled project - _5 - Part_1.wav")
 if waveform.ndim > 1:
     waveform = waveform.mean(axis=1)
 
@@ -160,15 +160,16 @@ amp_quant = mu_law_encode(waveform)
 
 
 dataset = AmpDataset(clean_quant, amp_quant, seq_len=512)
-dl = DataLoader(dataset, batch_size=1024, shuffle=True, drop_last=True)
+dl = DataLoader(dataset, batch_size=2048, shuffle=True, drop_last=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = ConditionalWaveNet().to(device)
+model = torch.compile(model)
 opt = torch.optim.Adam(model.parameters(), lr=1e-3)
 criterion = nn.CrossEntropyLoss()
 
 
-for a in range(10):
+for a in range(50):
     print(a)
     for epoch, (x, y) in enumerate(dl):
         if epoch % 100:
