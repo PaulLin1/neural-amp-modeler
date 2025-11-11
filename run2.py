@@ -210,7 +210,7 @@ opt = torch.optim.Adam(model.parameters(), lr=0.004)
 criterion = nn.MSELoss()
 
 # Training loop
-num_epochs = 20000
+num_epochs = 100
 for epoch in range(num_epochs):
     model.train()
     for x, y in dl:
@@ -225,6 +225,8 @@ for epoch in range(num_epochs):
     if epoch % 100 == 0:
         print(f"Epoch {epoch+1} / {num_epochs}, Loss: {loss.item():.6f}")
     # lr_scheduler.step()
+
+torch.save(model, "model.pkl")
 # %%
 # import torch
 # import matplotlib.pyplot as plt
