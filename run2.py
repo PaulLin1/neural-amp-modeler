@@ -1,19 +1,3 @@
-# %% [markdown]
-# # Notebook for experimenting with amp modeling
-
-# %% [markdown]
-# ## Tasks
-# 1. Basic Wavenet implementation
-# 2. LSTM? Not sure how time series is handled but I saw it online
-# 3. Audio as input
-# 4. Audio as output
-# 5. fixing any bugs with audio. probably will be volume issues and pops etc
-
-# %% [markdown]
-# ## Goal for this notebook
-# Make a capture of an amp. Model vs Profile. Profiling is when you model a amp completely. This includes eq and gain knobs and the way it responds to input. Profiling is a lot harder. Capturing just takes a snapshot of the amp at a certain setting.
-
-# %%
 print('hi')
 
 # %%
@@ -29,44 +13,6 @@ import math
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
 
-
-# %% [markdown]
-# ## Processing
-# mu law encoding? compresses +-1 input to 0-225. It compresses the input for better training. Not like a audio compressor for production it doesnt alter the input just makes it easier to train.
-
-# %%
-# mu-law for compression
-# just a bunch of math that uses log compression to remove harsh sounds
-# might not use dont want to compress dynamics
-MU = 255
-
-def mu_law_encode(x, mu=MU):
-    x = np.clip(x, -1.0, 1.0)
-    mag = np.log1p(mu * np.abs(x)) / np.log1p(mu)
-    encoded = ((np.sign(x) * mag) + 1) / 2 * mu
-    return np.round(encoded).astype(np.int64)
-
-def mu_law_decode(encoded, mu=MU):
-    x = (encoded.astype(np.float32) / mu) * 2 - 1
-    sign = np.sign(x)
-    mag = (1 / mu) * ((1 + mu) ** np.abs(x) - 1)
-    return sign * mag
-
-# %% [markdown]
-# # Wavenet
-# 
-# Causal Conv
-# A wavenet is a cnn but is causal. this means that it hides following input for training like llms. for llms you want to predict the next set of words, so having them as inputs would be cheating and make the task really easy you would just map the input to the output. for a task like image recognition, you look at the entire image for classification. cnn's are like this. so we have to modify it to be causal for audio prediction esque tassks
-# 
-# resid layer
-# kind of a theory thing. basically if you let input flow through the model without being modifided like passing it rhough a conv1d it makes training better. 
-# 
-# 
-# our model uses those 2 and some embedding layer and predition head. those are just feed forward networks.
-
-# %%
-import torch
-import torch.nn as nn
 
 class CausalConv1d(nn.Module):
     """1D causal convolution."""
@@ -153,43 +99,33 @@ class AmpDatasetVectorized(torch.utils.data.Dataset):
         y_target = self.y[:, self.rf - 1:]  # trim first rf-1 samples
         return x_input, y_target
 
-
-# %%
-# process input stuff
 from scipy.io import wavfile
 
 # Process clean
-sr, waveform = wavfile.read("samples/clean/double stop.wav")
+sr, waveform = wavfile.read("scale_clean.wav")
 if waveform.ndim > 1:
     waveform = waveform.mean(axis=1)
 
 waveform = waveform.astype(np.float32)
 waveform /= np.abs(waveform).max()
-clean_quant = mu_law_encode(waveform)
+clean_quant = waveform
 
 # Process amped
-sr, waveform = wavfile.read("samples/real/double stop.wav")
+sr, waveform = wavfile.read("scale_amp.wav")
 if waveform.ndim > 1:
     waveform = waveform.mean(axis=1)
 
 waveform = waveform.astype(np.float32)
 waveform /= np.abs(waveform).max()
-amp_quant = mu_law_encode(waveform)
+amp_quant = waveform
 
 clean_tensor = torch.tensor(clean_quant, dtype=torch.float)
 amp_tensor   = torch.tensor(amp_quant, dtype=torch.float)
 
-# %%
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-
-# Assume WaveNet and AmpDatasetVectorized are already defined
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Example waveform (replace with your data)
-clean_wave = clean_quant # 1D numpy array or torch tensor
+clean_wave = clean_quant[:-1] # 1D numpy array or torch tensor
 amp_wave   = amp_quant  # same length
 
 # Initialize model
@@ -207,10 +143,10 @@ dl = DataLoader(dataset, batch_size=1, shuffle=False)  # full waveform in one ba
 # Optimizer & loss
 opt = torch.optim.Adam(model.parameters(), lr=0.004)
 # lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.993)
-criterion = nn.MSELoss()
+criterion = nn.L1Loss()
 
 # Training loop
-num_epochs = 100
+num_epochs = 10000
 for epoch in range(num_epochs):
     model.train()
     for x, y in dl:
@@ -227,42 +163,4 @@ for epoch in range(num_epochs):
     # lr_scheduler.step()
 
 torch.save(model, "model.pkl")
-# %%
-# import torch
-# import matplotlib.pyplot as plt
-
-# # Assuming clean_tensor is [seq_len] or [batch_size, seq_len]
-# # tensor_np = pred_np
-# print(y_pred.shape)
-# plt.figure(figsize=(12, 4))
-# # plt.plot(mu_law_decode(y_pred.squeeze(0).numpy()), color='blue')
-# plt.plot(q, color='blue')
-
-# plt.title("Clean Tensor Waveform")
-# plt.xlabel("Sample Index")
-# plt.ylabel("Amplitude (quantized)")
-# plt.grid(True)
-# plt.show()
-
-
-# %%
-model.eval()
-with torch.no_grad():
-    # x: 1D tensor of input waveform
-    x = torch.tensor(clean_wave, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)  # (1, L)
-    
-    # forward pass
-    y_pred = model(x)[:, :, model.receptive_field - 1:]  # remove initial causal padding
-    
-    y_pred = y_pred.squeeze(0).cpu()  # (L - rf + 1,)
-
-q = mu_law_decode(y_pred.squeeze(0).numpy())
-
-# %%
-from scipy.io.wavfile import write
-write("outpu12.wav", sr, (mu_law_decode(amp_quant) * 32767).astype(np.int16))
-
-# %%
-
-
 
