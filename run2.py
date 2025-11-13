@@ -1,7 +1,3 @@
-print('hi')
-
-# %%
-# import dependecies
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,10 +5,13 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import torch
 import math
+from scipy.io import wavfile
+from scipy.signal import butter, filtfilt
 
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class CausalConv1d(nn.Module):
     """1D causal convolution."""
@@ -99,36 +98,30 @@ class AmpDatasetVectorized(torch.utils.data.Dataset):
         y_target = self.y[:, self.rf - 1:]  # trim first rf-1 samples
         return x_input, y_target
 
-from scipy.io import wavfile
+def preprocess_audio(path, target_rms=0.1):
+    sr, waveform = wavfile.read(path)
+    if waveform.ndim > 1:
+        waveform = waveform.mean(axis=1)
+    waveform = waveform.astype(np.float32)
+    waveform -= np.mean(waveform)
+    
+    # Normalize amplitude and prevent clipping
+    waveform /= (np.max(np.abs(waveform)) + 1e-7)
+    waveform *= 0.99
+    
+    # High-pass filter to remove DC / subsonic
+    b, a = butter(1, 20 / (sr / 2), btype='highpass')
+    waveform = filtfilt(b, a, waveform)
+    
+    # RMS normalization
+    def rms(x): return np.sqrt(np.mean(x**2))
+    waveform *= target_rms / (rms(waveform) + 1e-9)
+    
+    return sr, waveform
 
-# Process clean
-sr, waveform = wavfile.read("scale_clean.wav")
-if waveform.ndim > 1:
-    waveform = waveform.mean(axis=1)
+sr, clean_quant = preprocess_audio("scale_clean.wav")
+sr, amp_quant   = preprocess_audio("scale_amp.wav")
 
-waveform = waveform.astype(np.float32)
-waveform /= np.abs(waveform).max()
-clean_quant = waveform
-
-# Process amped
-sr, waveform = wavfile.read("scale_amp.wav")
-if waveform.ndim > 1:
-    waveform = waveform.mean(axis=1)
-
-waveform = waveform.astype(np.float32)
-waveform /= np.abs(waveform).max()
-amp_quant = waveform
-
-clean_tensor = torch.tensor(clean_quant, dtype=torch.float)
-amp_tensor   = torch.tensor(amp_quant, dtype=torch.float)
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Example waveform (replace with your data)
-clean_wave = clean_quant[:-1] # 1D numpy array or torch tensor
-amp_wave   = amp_quant  # same length
-
-# Initialize model
 model = WaveNet(
     in_channels=1,
     channels=16,
@@ -136,31 +129,28 @@ model = WaveNet(
     num_blocks=1,
 ).to(device)
 
-# Vectorized dataset
-dataset = AmpDatasetVectorized(clean_wave, amp_wave, model)
-dl = DataLoader(dataset, batch_size=1, shuffle=False)  # full waveform in one batch
+dataset = AmpDatasetVectorized(clean_quant, amp_quant, model)
+dl = DataLoader(dataset, batch_size=1, shuffle=False)
 
-# Optimizer & loss
 opt = torch.optim.Adam(model.parameters(), lr=0.004)
 # lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.993)
 criterion = nn.L1Loss()
 
 # Training loop
-num_epochs = 10000
+num_epochs = 20000
 for epoch in range(num_epochs):
     model.train()
     for x, y in dl:
-        x = x.to(device)       # shape (1, L)
-        y = y.to(device)       # shape (1, L-rf+1)
+        x = x.to(device)
+        y = y.to(device)
 
         opt.zero_grad()
-        y_pred = model(x)[:, :, model.receptive_field - 1:]  # trim causal pad
+        y_pred = model(x)[:, :, model.receptive_field - 1:]
         loss = criterion(y_pred, y)
         loss.backward()
         opt.step()
     if epoch % 100 == 0:
         print(f"Epoch {epoch+1} / {num_epochs}, Loss: {loss.item():.6f}")
-    # lr_scheduler.step()
 
 torch.save(model, "model.pkl")
 
